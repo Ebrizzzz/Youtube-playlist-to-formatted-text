@@ -6,10 +6,11 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QColor
 from datetime import datetime
 from pytube import Playlist
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 import google.generativeai as genai
 import re
 import logging
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -663,25 +664,41 @@ class TranscriptExtractionThread(QThread):
         try:
             url = self.playlist_url 
 
-            if "playlist?list=" in url: # Check if it's a playlist URL
+            if "playlist?list=" in url:  # Verifica se é uma playlist
                 playlist = Playlist(url)
                 video_urls = playlist.video_urls
                 total_videos = len(video_urls)
-                playlist_name = playlist.title # Get playlist name
-            elif "watch?v=" in url: # Check if it's a single video URL
-                video_urls = [url] # Treat it as a playlist of one video
+                playlist_name = playlist.title  # Nome da playlist
+            elif "watch?v=" in url:  # Se for um único vídeo
+                video_urls = [url]  # Trata como uma playlist de um vídeo
                 total_videos = 1
                 playlist_name = "Single Video"
 
             with open(self.output_file, 'w', encoding='utf-8') as f:
                 f.write(f"Playlist Name: {playlist_name}\n\n") 
+
                 for index, video_url in enumerate(video_urls, 1):
                     if not self._is_running:
                         return
 
                     try:
                         video_id = video_url.split("?v=")[1].split("&")[0]
-                        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                        
+                        # Tenta pegar legendas em inglês
+                        try:
+                            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                        except TranscriptsDisabled:
+                            self.status_update.emit(f"Transcripts are disabled for {video_url}.")
+                            continue
+                        except:
+                            # Se não houver em inglês, tenta em português (auto-gerado)
+                            try:
+                                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['pt'])
+                            except Exception:
+                                self.status_update.emit(f"No available transcripts for {video_url}.")
+                                continue
+                        
+                        # Junta todas as frases da legenda em um único texto
                         transcript = ' '.join([transcript['text'] for transcript in transcript_list])
 
                         f.write(f"Video URL: {video_url}\n")
@@ -690,10 +707,12 @@ class TranscriptExtractionThread(QThread):
                         progress_percent = int((index / total_videos) * 100)
                         self.progress_update.emit(progress_percent)
                         self.status_update.emit(f"Extracted transcript for video {index}/{total_videos}")
+
                     except Exception as video_error:
                         self.status_update.emit(f"Error processing {video_url}: {str(video_error)}")
 
             self.extraction_complete.emit(self.output_file)
+
         except Exception as e:
             self.error_occurred.emit(f"Extraction error: {str(e)}")
 
